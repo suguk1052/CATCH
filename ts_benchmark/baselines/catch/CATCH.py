@@ -42,8 +42,12 @@ DEFAULT_TRANSFORMER_BASED_HYPER_PARAMS = {
     "module_first": True,
     "mask": False,
     "pretrained_model": None,
+    "save_checkpoint_path": None,
     "num_epochs": 3,
     "batch_size": 128,
+    "use_amp": True,
+    "use_multi_gpu": False,
+    "device_ids": None,
     "patience": 3,
     "anomaly_ratio": [0.1, 0.5, 1.0, 2, 3, 5.0, 10.0, 15, 20, 25],
     "seq_len": 192,
@@ -81,6 +85,11 @@ class CATCH:
         self.criterion = nn.MSELoss()
         self.auxi_loss = frequency_loss(self.config)
         self.seq_len = self.config.seq_len
+        self._checkpoint_state = None
+        self.scaler_amp = torch.cuda.amp.GradScaler(enabled=self.config.use_amp and torch.cuda.is_available())
+
+    def _model_core(self):
+        return self.model.module if isinstance(self.model, nn.DataParallel) else self.model
 
     @staticmethod
     def required_hyper_params() -> dict:
@@ -125,7 +134,8 @@ class CATCH:
             for input, _ in valid_data_loader:
                 input = input.to(device)
 
-                output, _, _ = self.model(input)
+                with torch.cuda.amp.autocast(enabled=self.config.use_amp and torch.cuda.is_available()):
+                    output, _, _ = self.model(input)
 
                 output = output[:, :, :]
 
@@ -150,11 +160,21 @@ class CATCH:
         setattr(self.config, "task_name", "anomaly_detection")
         self.config.c_in = train_data.shape[1]
         self.model = CATCHModel(self.config)
+        if (
+            self.config.use_multi_gpu
+            and torch.cuda.is_available()
+            and torch.cuda.device_count() > 1
+        ):
+            self.model = nn.DataParallel(self.model, device_ids=self.config.device_ids)
         self.model.to(self.device)
 
         config = self.config
         train_data_value, valid_data = train_val_split(train_data, 0.8, None)
-        self.scaler.fit(train_data_value.values)
+        if config.pretrained_model:
+            checkpoint = torch.load(config.pretrained_model, map_location=self.device)
+            self._load_checkpoint_artifacts(checkpoint)
+        else:
+            self.scaler.fit(train_data_value.values)
 
         train_data_value = pd.DataFrame(
             self.scaler.transform(train_data_value.values),
@@ -184,6 +204,10 @@ class CATCH:
             mode="train",
         )
 
+        if config.pretrained_model:
+            self._checkpoint_state = checkpoint["model_state_dict"]
+            return
+
         total_params = sum(
             p.numel() for p in self.model.parameters() if p.requires_grad
         )
@@ -193,10 +217,11 @@ class CATCH:
 
         train_steps = len(self.train_data_loader)
         main_params = [param for name, param in self.model.named_parameters() if 'mask_generator' not in name]
+        model_core = self._model_core()
 
         self.optimizer = torch.optim.Adam(main_params,
                                           lr=self.config.lr)
-        self.optimizerM = torch.optim.Adam(self.model.mask_generator.parameters(), lr=self.config.Mlr)
+        self.optimizerM = torch.optim.Adam(model_core.mask_generator.parameters(), lr=self.config.Mlr)
 
         scheduler = lr_scheduler.OneCycleLR(
             optimizer=self.optimizer,
@@ -230,13 +255,14 @@ class CATCH:
 
                 input = input.float().to(self.device)
 
-                output, output_complex, dcloss = self.model(input)
+                with torch.cuda.amp.autocast(enabled=self.config.use_amp and torch.cuda.is_available()):
+                    output, output_complex, dcloss = self.model(input)
 
                 output = output[:, :, :]
 
                 rec_loss = self.criterion(output, input)
 
-                norm_input = self.model.revin_layer(input, 'transform')
+                norm_input = model_core.revin_layer(input, 'transform')
                 auxi_loss = self.auxi_loss(output_complex, norm_input)
 
                 loss = rec_loss + config.dc_lambda * dcloss + config.auxi_lambda * auxi_loss
@@ -265,8 +291,9 @@ class CATCH:
                     iter_count = 0
                     time_now = time.time()
 
-                loss.backward()
-                self.optimizer.step()
+                self.scaler_amp.scale(loss).backward()
+                self.scaler_amp.step(self.optimizer)
+                self.scaler_amp.update()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
@@ -285,11 +312,37 @@ class CATCH:
             adjust_learning_rate(self.optimizer, scheduler, epoch + 1, self.config)
             adjust_learning_rate(self.optimizerM, schedulerM, epoch + 1, self.config, printout=False)
 
+        self._checkpoint_state = self.early_stopping.check_point
+        if config.save_checkpoint_path:
+            self._save_checkpoint_artifacts(config.save_checkpoint_path)
+
+    def _load_checkpoint_artifacts(self, checkpoint: dict):
+        self._model_core().load_state_dict(checkpoint["model_state_dict"])
+        self.scaler.mean_ = np.array(checkpoint["scaler_mean"], dtype=np.float64)
+        self.scaler.scale_ = np.array(checkpoint["scaler_scale"], dtype=np.float64)
+        self.scaler.var_ = np.square(self.scaler.scale_)
+        self.scaler.n_features_in_ = len(self.scaler.mean_)
+        self.scaler.n_samples_seen_ = int(checkpoint.get("n_samples_seen", 1))
+
+    def _save_checkpoint_artifacts(self, checkpoint_path: str):
+        torch.save(
+            {
+                "model_state_dict": self._model_core().state_dict(),
+                "scaler_mean": self.scaler.mean_.tolist(),
+                "scaler_scale": self.scaler.scale_.tolist(),
+                "n_samples_seen": int(getattr(self.scaler, "n_samples_seen_", 1)),
+            },
+            checkpoint_path,
+        )
+
     def detect_score(self, test: pd.DataFrame) -> np.ndarray:
         test = pd.DataFrame(
             self.scaler.transform(test.values), columns=test.columns, index=test.index
         )
-        self.model.load_state_dict(self.early_stopping.check_point)
+        if self._checkpoint_state is not None:
+            self._model_core().load_state_dict(self._checkpoint_state)
+        else:
+            self.model.load_state_dict(self.early_stopping.check_point)
 
         if self.model is None:
             raise ValueError("Model not trained. Call the fit() function first.")
@@ -337,7 +390,10 @@ class CATCH:
         test = pd.DataFrame(
             self.scaler.transform(test.values), columns=test.columns, index=test.index
         )
-        self.model.load_state_dict(self.early_stopping.check_point)
+        if self._checkpoint_state is not None:
+            self._model_core().load_state_dict(self._checkpoint_state)
+        else:
+            self.model.load_state_dict(self.early_stopping.check_point)
 
         if self.model is None:
             raise ValueError("Model not trained. Call the fit() function first.")
