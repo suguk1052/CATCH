@@ -92,6 +92,14 @@ class CATCH:
     def _model_core(self):
         return self.model.module if isinstance(self.model, nn.DataParallel) else self.model
 
+    def _normalize_for_auxiliary(self, input_tensor: torch.Tensor) -> torch.Tensor:
+        if self.config.subtract_last:
+            anchor = input_tensor[:, -1:, :]
+        else:
+            anchor = torch.mean(input_tensor, dim=1, keepdim=True)
+        stdev = torch.sqrt(torch.var(input_tensor, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        return (input_tensor - anchor) / stdev
+
     @staticmethod
     def required_hyper_params() -> dict:
         """
@@ -270,7 +278,7 @@ class CATCH:
 
                 rec_loss = self.criterion(output, input)
 
-                norm_input = model_core.revin_layer(input, 'transform')
+                norm_input = self._normalize_for_auxiliary(input)
                 auxi_loss = self.auxi_loss(output_complex, norm_input)
 
                 loss = rec_loss + config.dc_lambda * dcloss + config.auxi_lambda * auxi_loss
