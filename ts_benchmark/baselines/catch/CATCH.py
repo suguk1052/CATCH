@@ -48,6 +48,7 @@ DEFAULT_TRANSFORMER_BASED_HYPER_PARAMS = {
     "use_amp": True,
     "use_multi_gpu": False,
     "device_ids": None,
+    "adam_foreach": False,
     "patience": 3,
     "anomaly_ratio": [0.1, 0.5, 1.0, 2, 3, 5.0, 10.0, 15, 20, 25],
     "seq_len": 192,
@@ -219,9 +220,16 @@ class CATCH:
         main_params = [param for name, param in self.model.named_parameters() if 'mask_generator' not in name]
         model_core = self._model_core()
 
-        self.optimizer = torch.optim.Adam(main_params,
-                                          lr=self.config.lr)
-        self.optimizerM = torch.optim.Adam(model_core.mask_generator.parameters(), lr=self.config.Mlr)
+        self.optimizer = torch.optim.Adam(
+            main_params,
+            lr=self.config.lr,
+            foreach=self.config.adam_foreach,
+        )
+        self.optimizerM = torch.optim.Adam(
+            model_core.mask_generator.parameters(),
+            lr=self.config.Mlr,
+            foreach=self.config.adam_foreach,
+        )
 
         scheduler = lr_scheduler.OneCycleLR(
             optimizer=self.optimizer,
@@ -251,7 +259,7 @@ class CATCH:
             step = min(int(len(self.train_data_loader) / 10), 100)
             for i, (input, target) in enumerate(self.train_data_loader):
                 iter_count += 1
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
 
                 input = input.float().to(self.device)
 
@@ -271,7 +279,7 @@ class CATCH:
 
                 if (i + 1) % step == 0:
                     self.optimizerM.step()
-                    self.optimizerM.zero_grad()
+                    self.optimizerM.zero_grad(set_to_none=True)
 
                 if (i + 1) % 100 == 0:
                     print(
