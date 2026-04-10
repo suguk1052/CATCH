@@ -61,7 +61,11 @@ class CATCHModel(nn.Module):
         z = self.revin_layer(z, 'norm')
 
         z = z.permute(0, 2, 1)
-        z = torch.fft.fft(z)
+        # NOTE:
+        # cuFFT in fp16 supports only power-of-two signal lengths.
+        # We force FFT/IFFT to run in fp32 so non-power-of-two seq_len
+        # (e.g. 192) also works when AMP/autocast is enabled.
+        z = torch.fft.fft(z.float())
         z1 = z.real
         z2 = z.imag
 
@@ -101,7 +105,7 @@ class CATCHModel(nn.Module):
         z1 = self.head_f1(z1)  # z: [bs x nvars x seq_len]
         z2 = self.head_f2(z2)  # z: [bs x nvars x seq_len]
 
-        complex_z = torch.complex(z1, z2)
+        complex_z = torch.complex(z1.float(), z2.float())
 
         z = torch.fft.ifft(complex_z)
         zr = z.real
