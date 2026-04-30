@@ -19,12 +19,16 @@ python ./scripts/run_benchmark.py \
 ## 2) 추론 전용 실행
 
 ```bash
-bash scripts/run_catch_inference_only.sh \
-  PSM.csv \
-  result/checkpoints/CATCH/PSM.pt \
-  0 \
-  label/CATCH_inference_only
+bash scripts/custom/PSM_CATCH_inference_only_label.sh
 ```
 
 - 출력 레코드: `result/label/CATCH_inference_only/*.csv.tar.gz`
-- 레코드에 `inference_time`이 포함되어 추론 속도 비교 가능
+- 레코드에 `inference_time`, `inference_speed`(samples/sec)가 포함되어 추론 속도 비교 가능
+
+## 3) score 버전 추론 전용 실행
+
+```bash
+bash scripts/custom/PSM_CATCH_inference_only_score.sh
+```
+
+- 출력 레코드: `result/score/CATCH_inference_only/*.csv.tar.gz`
