@@ -30,7 +30,8 @@
             "affiliation_f",
             "f_score",
             "adjust_f_score",
-            "rf"
+            "rf",
+            "inference_speed"
         ],
         "fill_type": "mean_value",
         "null_value_threshold": "0.3"

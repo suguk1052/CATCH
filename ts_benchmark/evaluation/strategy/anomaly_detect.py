@@ -64,6 +64,13 @@ class AnomalyDetect(Strategy):
 
             actual_label = test_label.to_numpy().flatten()
             end_inference_time = time.time()
+            inference_time_cost = end_inference_time - end_fit_time
+            inference_speed = len(test_data) / max(inference_time_cost, 1e-12)
+            print(
+                f"[InferenceSpeed] series={series_name}, "
+                f"inference_time={inference_time_cost:.6f}s, "
+                f"inference_speed={inference_speed:.6f} samples/s"
+            )
 
             single_series_results_list = []
             for ratio, predict_label in predict_labels.items():
@@ -101,8 +108,8 @@ class AnomalyDetect(Strategy):
                 single_series_results += [
                     series_name,
                     end_fit_time - start_fit_time,
-                    end_inference_time - end_fit_time,
-                    len(test_data) / max(end_inference_time - end_fit_time, 1e-12),
+                    inference_time_cost,
+                    inference_speed,
                     ratio,
                     '',
                     '',
