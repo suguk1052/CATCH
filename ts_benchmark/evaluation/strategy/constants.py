@@ -17,6 +17,7 @@ class FieldNames:
     INFERENCE_DATA = "inference_data"
     LOG_INFO = "log_info"
     ANOMALY_RATIO = "typical_anomaly_ratio"
+    INFERENCE_SPEED = "inference_speed"
 
     @classmethod
     def all_fields(cls) -> List[str]:
@@ -30,4 +31,5 @@ class FieldNames:
             cls.ACTUAL_DATA,
             cls.INFERENCE_DATA,
             cls.LOG_INFO,
+            cls.INFERENCE_SPEED,
         ]

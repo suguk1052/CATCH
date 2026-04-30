@@ -1,4 +1,5 @@
 import time
+import os
 
 import numpy as np
 import pandas as pd
@@ -42,6 +43,7 @@ DEFAULT_TRANSFORMER_BASED_HYPER_PARAMS = {
     "module_first": True,
     "mask": False,
     "pretrained_model": None,
+    "checkpoint_path": None,
     "num_epochs": 3,
     "batch_size": 128,
     "patience": 3,
@@ -184,6 +186,19 @@ class CATCH:
             mode="train",
         )
 
+        if config.pretrained_model:
+            ckpt = torch.load(config.pretrained_model, map_location=self.device)
+            self.model.load_state_dict(ckpt["model_state_dict"])
+            self.early_stopping = EarlyStopping(patience=self.config.patience, verbose=True)
+            self.early_stopping.check_point = ckpt["model_state_dict"]
+            if "scaler_mean" in ckpt and "scaler_scale" in ckpt:
+                self.scaler.mean_ = np.array(ckpt["scaler_mean"])
+                self.scaler.scale_ = np.array(ckpt["scaler_scale"])
+                self.scaler.var_ = np.square(self.scaler.scale_)
+                self.scaler.n_features_in_ = len(self.scaler.mean_)
+            print(f"Loaded pretrained model for inference-only: {config.pretrained_model}")
+            return
+
         total_params = sum(
             p.numel() for p in self.model.parameters() if p.requires_grad
         )
@@ -284,6 +299,17 @@ class CATCH:
 
             adjust_learning_rate(self.optimizer, scheduler, epoch + 1, self.config)
             adjust_learning_rate(self.optimizerM, schedulerM, epoch + 1, self.config, printout=False)
+        if config.checkpoint_path:
+            os.makedirs(os.path.dirname(config.checkpoint_path), exist_ok=True)
+            torch.save(
+                {
+                    "model_state_dict": self.early_stopping.check_point,
+                    "scaler_mean": self.scaler.mean_.tolist(),
+                    "scaler_scale": self.scaler.scale_.tolist(),
+                },
+                config.checkpoint_path,
+            )
+            print(f"Saved trained checkpoint: {config.checkpoint_path}")
 
     def detect_score(self, test: pd.DataFrame) -> np.ndarray:
         test = pd.DataFrame(
